@@ -65,6 +65,7 @@ test("pairing is refused outside the TUI; list/forget/release work headless", as
 
 test("getArgumentCompletions offers subcommands and forget targets", async () => {
 	const c = await pi.commands.chrome.getArgumentCompletions("");
-	assert.ok(c.includes("pair") && c.includes("release"));
+	assert.ok(c.some((item) => item.value === "pair" && item.label === "pair"));
+	assert.ok(c.some((item) => item.value === "release" && item.label === "release"));
 	assert.deepEqual(await pi.commands.chrome.getArgumentCompletions("xy"), []);
 });

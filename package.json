@@ -4,14 +4,32 @@
   "private": true,
   "description": "Pi extension: drive one named real Chrome profile at a time through the official Playwright MCP Chrome extension relay",
   "type": "module",
+  "pi": {
+    "extensions": [
+      "./.pi/extensions/index.ts"
+    ]
+  },
+  "files": [
+    "src/",
+    ".pi/extensions/",
+    "README.md"
+  ],
   "scripts": {
     "test": "node --test",
     "verify": "node --test && ./scripts/loader-smoke.sh"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",
-    "@playwright/mcp": "0.0.83",
-    "typebox": "^1.4.3"
+    "@playwright/mcp": "0.0.83"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-tui": "1.2.0",
+    "typebox": "1.4.3"
   },
   "engines": {
     "node": ">=22.6"

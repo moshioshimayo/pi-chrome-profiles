@@ -4,7 +4,10 @@
  * One named real Chrome profile at a time, driven through the official
  * Playwright MCP Chrome extension relay. See README.md.
  */
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionCommandContext,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { ChromeMcpClient, textOf, type McpToolInfo } from "./client.ts";
 import { maskedInput } from "./masked-input.ts";
@@ -15,22 +18,6 @@ import {
   type ProfileRecord,
 } from "./store.ts";
 import { SessionPin, blocksBrowserRoute } from "./state.ts";
-
-/** Minimal structural type for ctx.ui used by pairing (matches ExtensionUIContext). */
-interface UiCtx {
-  input(title: string, placeholder?: string): Promise<string | undefined>;
-  confirm(title: string, message: string): Promise<boolean>;
-  notify(message: string, type?: "info" | "warning" | "error"): void;
-  custom<T>(
-    factory: (
-      tui: unknown,
-      theme: unknown,
-      keybindings: unknown,
-      done: (result: T) => void,
-    ) => unknown,
-    options?: { overlay?: boolean },
-  ): Promise<T>;
-}
 
 export default function chromeProfiles(pi: ExtensionAPI) {
   const store = new ProfileStore();
@@ -59,7 +46,7 @@ export default function chromeProfiles(pi: ExtensionAPI) {
 
   async function cmdPair(
     nameArg: string | undefined,
-    ctx: { ui: UiCtx; mode?: string },
+    ctx: ExtensionCommandContext,
   ): Promise<void> {
     const name = (
       nameArg ??
@@ -85,9 +72,9 @@ export default function chromeProfiles(pi: ExtensionAPI) {
         `Not a Chrome profile: ${markerErr}. Cancelled; nothing changed.`,
         "error",
       );
-    const token = await ctx.ui.custom(
-      (tui, theme, kb, done) =>
-        maskedInput(tui, theme, kb, done, {
+    const token = await ctx.ui.custom<string | null>(
+      (tui, _theme, _kb, done) =>
+        maskedInput(tui, done, {
           title: "Playwright extension token",
           hint: "From the extension menu in THAT Chrome profile. Paste, then Enter.",
         }),
@@ -147,7 +134,7 @@ export default function chromeProfiles(pi: ExtensionAPI) {
               "Pairing needs the interactive TUI (masked token input + consent).",
               "error",
             );
-          await cmdPair(rest[0], ctx);
+          await cmdPair(rest.join(" ") || undefined, ctx);
         } else if (sub === "forget") {
           const name = rest.join(" ");
           if (!name)
@@ -158,6 +145,13 @@ export default function chromeProfiles(pi: ExtensionAPI) {
               `No profile named "${name}". /chrome list`,
               "error",
             );
+          if (
+            !(await ctx.ui.confirm(
+              "Forget Chrome profile?",
+              `Remove pairing for "${rec.name}"? Chrome and its data stay untouched.`,
+            ))
+          )
+            return;
           if (pin.pinnedKey === rec.nameKey) await pin.release();
           store.remove(name);
           ctx.ui.notify(`Forgot "${rec.name}" (token deleted).`, "info");
@@ -184,14 +178,12 @@ export default function chromeProfiles(pi: ExtensionAPI) {
     },
     getArgumentCompletions: async (query) => {
       const subs = ["list", "pair", "forget", "release"];
-      const parts = query.split(/\s+/);
-      if (parts.length <= 1) return subs.filter((s) => s.startsWith(query));
-      if (parts[0] === "forget")
-        return store
-          .list()
-          .map((p) => `forget ${p.name}`)
-          .filter((s) => s.startsWith(query));
-      return [];
+      const values = query.startsWith("forget ")
+        ? store.list().map((p) => `forget ${p.name}`)
+        : subs;
+      return values
+        .filter((value) => value.startsWith(query))
+        .map((value) => ({ value, label: value }));
     },
   });
 
@@ -294,7 +286,7 @@ export default function chromeProfiles(pi: ExtensionAPI) {
         const inv: string = pin.client.tools
           .map(
             (t: McpToolInfo) =>
-              `- ${t.name}: ${(t.description ?? "").split("\n")[0].slice(0, 120)}`,
+              `- ${t.name}: ${(t.description ?? "").split("\n")[0].slice(0, 120)}\n  arguments: ${JSON.stringify(t.inputSchema ?? { type: "object" })}`,
           )
           .join("\n");
         return {

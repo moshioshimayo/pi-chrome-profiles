@@ -9,7 +9,7 @@ const rec = { id: "1", name: "Work", nameKey: "work", userDataDir: "/U/Chrome", 
 /** Fake MCP client recording the protocol call sequence. */
 function fakeMcp({ listTools, callToolResult, callToolError, handshakeIsError } = {}) {
 	const calls = [];
-	const toolsList = [{ name: "browser_tabs", description: "Manage tabs" }, { name: "browser_navigate", description: "Navigate" }, { name: "browser_close", description: "Close" }];
+	const toolsList = [{ name: "browser_tabs", description: "Manage tabs" }, { name: "browser_navigate", description: "Navigate", inputSchema: { type: "object", required: ["url"], properties: { url: { type: "string" } } } }, { name: "browser_close", description: "Close" }];
 	return {
 		calls,
 		async connect() {
@@ -81,6 +81,7 @@ test("connect forces handshake browser op before connected", async () => {
 	assert.equal(mcp.calls[2][1], HANDSHAKE_TOOL, "handshake is the harmless browser op");
 	assert.deepEqual(mcp.calls[2][2], { action: "list" });
 	assert.equal(tools.length, 3);
+	assert.deepEqual(tools[1].inputSchema.required, ["url"], "upstream argument schema remains available");
 });
 
 test("initialize/listTools alone is NOT connected: handshake failure rejects", async () => {
@@ -149,6 +150,37 @@ test("callTool respects an aborted signal", async () => {
 	const ctl = new AbortController();
 	ctl.abort();
 	await assert.rejects(() => c.callTool("browser_navigate", {}, ctl.signal), /aborted/);
+});
+
+test("later browser-operation failures redact raw and encoded pairing tokens", async () => {
+	const mcp = fakeMcp();
+	const c = makeClient(mcp, fakeTransport());
+	await c.connect();
+	mcp.callTool = async () => { throw new Error(`operation failed ${TOKEN} url?token=${encodeURIComponent(TOKEN)}`); };
+	await assert.rejects(() => c.callTool("browser_navigate", {}), (error) => {
+		assert.ok(!error.message.includes(TOKEN));
+		assert.ok(!error.message.includes(encodeURIComponent(TOKEN)));
+		assert.ok(error.message.includes("chrome-token-redacted"));
+		return true;
+	});
+	await c.safeClose();
+});
+
+test("pre-aborted connection starts nothing; tool-discovery receives native SDK abort options", async () => {
+	const mcp = fakeMcp();
+	const c = makeClient(mcp, fakeTransport());
+	const cancelled = new AbortController(); cancelled.abort();
+	await assert.rejects(() => c.connect(cancelled.signal), /abort/i);
+	assert.equal(mcp.calls.length, 0);
+	const active = new AbortController();
+	const original = mcp.listTools;
+	mcp.listTools = (params, options) => {
+		assert.equal(params, undefined);
+		assert.equal(options.signal, active.signal);
+		return original();
+	};
+	await c.connect(active.signal);
+	await c.safeClose();
 });
 
 test("safeClose closes our transport only; idempotent", async () => {

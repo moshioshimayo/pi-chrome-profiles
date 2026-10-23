@@ -8,7 +8,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { makeRedactor, type Redactor } from "./redact.ts";
+import { makeRedactor, redactDeep, type Redactor } from "./redact.ts";
 import type { ProfileRecord } from "./store.ts";
 
 export const SERVER_VERSION = "0.0.83"; // pinned in package.json; kept in sync deliberately
@@ -60,6 +60,7 @@ export function buildSpawnSpec(
 export interface McpToolInfo {
   name: string;
   description?: string;
+  inputSchema?: Record<string, unknown>;
 }
 
 export type PiContent =
@@ -94,24 +95,29 @@ export class ChromeMcpClient {
   /** Spawn + initialize + listTools + force a harmless browser op. Only then is connected=true. */
   async connect(signal?: AbortSignal): Promise<McpToolInfo[]> {
     if (this.client) throw new Error("client already connected");
+    signal?.throwIfAborted();
     const spec = buildSpawnSpec(this.record);
     this.transport = this.makeTransport(spec) as StdioClientTransport;
     this.client = this.makeClient();
     try {
+      this.watchStderr();
       await this.withTimeout(
         this.client.connect(this.transport),
         "MCP initialize timed out",
         signal,
       );
-      this.watchStderr();
       const { tools } = await this.withTimeout(
-        this.client.listTools({ signal }),
+        this.client.listTools(undefined, { signal }),
         "listTools timed out",
         signal,
       );
       this.tools = tools.map((t) => ({
         name: t.name,
-        description: t.description,
+        description: t.description ? this.redactor(t.description) : undefined,
+        inputSchema: redactDeep(t.inputSchema, this.redactor) as Record<
+          string,
+          unknown
+        >,
       }));
       // Astra caution: initialize/listTools is NOT a browser connection. Force one
       // harmless read through the relay before reporting connected.
@@ -142,6 +148,7 @@ export class ChromeMcpClient {
     signal?: AbortSignal,
   ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
+      if (signal?.aborted) return reject(new Error("aborted"));
       const t = setTimeout(
         () => reject(new Error(`${what} after ${CONNECT_TIMEOUT_MS / 1000}s`)),
         CONNECT_TIMEOUT_MS,
@@ -167,12 +174,10 @@ export class ChromeMcpClient {
   }
 
   private watchStderr(): void {
-    const child = (
-      this.transport as unknown as { _process?: NodeJS.ChildProcess }
-    )._process;
-    if (!child?.stderr) return;
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk: string) => {
+    const stderr = this.transport?.stderr;
+    if (!stderr) return;
+    stderr.setEncoding("utf8");
+    stderr.on("data", (chunk: string) => {
       const line = this.redactor(chunk).trim();
       if (line) {
         this.stderrChunks.push(line);
@@ -202,28 +207,36 @@ export class ChromeMcpClient {
       throw new Error(
         `tool ${name} is blocked (it could launch or close a browser)`,
       );
-    const res = await this.client.callTool(
-      { name, arguments: args },
-      undefined,
-      {
-        signal,
-        timeout: CALL_TIMEOUT_MS,
-      },
-    );
-    const content: PiContent[] = [];
-    for (const item of (res.content ?? []) as Array<Record<string, unknown>>) {
-      if (item.type === "text" && typeof item.text === "string") {
-        content.push({ type: "text", text: this.redactor(item.text) });
-      } else if (item.type === "image" && typeof item.data === "string") {
-        content.push({
-          type: "image",
-          data: item.data,
-          mimeType:
-            typeof item.mimeType === "string" ? item.mimeType : "image/png",
-        });
+    try {
+      const res = await this.client.callTool(
+        { name, arguments: args },
+        undefined,
+        {
+          signal,
+          timeout: CALL_TIMEOUT_MS,
+        },
+      );
+      const content: PiContent[] = [];
+      for (const item of (res.content ?? []) as Array<
+        Record<string, unknown>
+      >) {
+        if (item.type === "text" && typeof item.text === "string") {
+          content.push({ type: "text", text: this.redactor(item.text) });
+        } else if (item.type === "image" && typeof item.data === "string") {
+          content.push({
+            type: "image",
+            data: item.data,
+            mimeType:
+              typeof item.mimeType === "string" ? item.mimeType : "image/png",
+          });
+        }
       }
+      return { content, isError: Boolean(res.isError) };
+    } catch (error) {
+      throw new Error(
+        this.redactor(error instanceof Error ? error.message : String(error)),
+      );
     }
-    return { content, isError: Boolean(res.isError) };
   }
 
   /** Closes OUR transport (SIGTERM to our own server child). Never touches Chrome or user tabs. */
