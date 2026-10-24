@@ -42,7 +42,7 @@ test("native pairing callback accepts pasted token and multiword names; completi
       }),
     },
   };
-  await command.handler("pair Chrome A", ctx);
+  await command.handler("pair --manual Chrome A", ctx);
   assert.equal(finished, true);
   assert.ok(messages.some((message) => message.includes('Paired "Chrome A"')), messages.join("\n"));
   const listed = await tools.get("chrome_profiles").execute();

@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { after, test } from "node:test";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ChromeMcpClient, buildSpawnSpec, HANDSHAKE_TOOL } from "../src/client.ts";
 
 const TOKEN = "pwe_tok-ABCdef123456789+/==";
 
-const rec = { id: "1", name: "Work", nameKey: "work", userDataDir: "/U/Chrome", profileDirName: "Profile 1", token: TOKEN, pairedAt: "now" };
+const userDataDir = mkdtempSync(join(tmpdir(), "chrome-client-"));
+mkdirSync(join(userDataDir, "Profile 1"));
+writeFileSync(join(userDataDir, "Profile 1", "Preferences"), "{}");
+after(() => rmSync(userDataDir, { recursive: true, force: true }));
+const rec = { id: "1", name: "Work", nameKey: "work", userDataDir, profileDirName: "Profile 1", token: TOKEN, pairedAt: "now" };
 
 /** Fake MCP client recording the protocol call sequence. */
 function fakeMcp({ listTools, callToolResult, callToolError, handshakeIsError } = {}) {
@@ -50,8 +57,14 @@ test("buildSpawnSpec: exact argv, node + pinned cli, extension flags, no token i
 	const { serverCliPath } = await import("../src/client.ts");
 	const spec = buildSpawnSpec(rec);
 	assert.equal(spec.command, process.execPath);
-	assert.deepEqual(spec.args, [serverCliPath(), "--extension", "--browser", "chrome", "--user-data-dir", "/U/Chrome", "--profile-dir-name", "Profile 1"]);
+	assert.deepEqual(spec.args, [serverCliPath(), "--extension", "--browser", "chrome", "--user-data-dir", userDataDir, "--profile-dir-name", "Profile 1"]);
 	assert.ok(!JSON.stringify(spec.args).includes(TOKEN), "token never in argv");
+});
+
+test("a removed profile never launches an anonymous replacement browser", async () => {
+  const client = new ChromeMcpClient({ ...rec, profileDirName: "Profile 999" });
+  client.makeTransport = () => assert.fail("missing profile must be rejected before spawn");
+  await assert.rejects(() => client.connect(), /profile is unavailable.*No browser was opened/);
 });
 
 test("buildSpawnSpec: env is allowlist + token only; ambient DEBUG/PLAYWRIGHT_* excluded", () => {

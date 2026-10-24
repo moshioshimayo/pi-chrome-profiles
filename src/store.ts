@@ -70,6 +70,19 @@ export function splitProfilePath(
   return { userDataDir, profileDirName };
 }
 
+function connectionToken(value: string): string {
+  // The official Copy button copies an environment assignment. Accept it as-is.
+  const token = value
+    .trim()
+    .replace(/^(?:export\s+)?PLAYWRIGHT_MCP_EXTENSION_TOKEN\s*=\s*/, "")
+    .replace(/^(['"])(.*)\1$/, "$2");
+  if (!token || token.length > 512 || /\s/.test(token))
+    throw new Error(
+      "Paste the Playwright token or its copied PLAYWRIGHT_MCP_EXTENSION_TOKEN=… line.",
+    );
+  return token;
+}
+
 export class ProfileStore {
   private file: string;
 
@@ -122,7 +135,10 @@ export class ProfileStore {
   }
 
   get(nameKey: string): ProfileRecord | undefined {
-    return this.load().find((p) => p.nameKey === nameKey.toLowerCase());
+    const record = this.load().find((p) => p.nameKey === nameKey.toLowerCase());
+    return record
+      ? { ...record, token: connectionToken(record.token) }
+      : undefined;
   }
 
   /** Throws on duplicate name (case-insensitive) before anything is written. */
@@ -146,7 +162,7 @@ export class ProfileStore {
       nameKey,
       userDataDir: input.userDataDir,
       profileDirName: input.profileDirName,
-      token: input.token.trim(),
+      token: connectionToken(input.token),
       pairedAt: new Date().toISOString(),
     };
     this.persist([...records, record]);

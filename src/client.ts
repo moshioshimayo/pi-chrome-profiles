@@ -9,7 +9,7 @@ import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { makeRedactor, redactDeep, type Redactor } from "./redact.ts";
-import type { ProfileRecord } from "./store.ts";
+import { validateProfilePath, type ProfileRecord } from "./store.ts";
 
 export const SERVER_VERSION = "0.0.83"; // pinned in package.json; kept in sync deliberately
 export const HANDSHAKE_TOOL = "browser_tabs"; // {action:"list"} — harmless read proving CDP relay + browser are live
@@ -96,6 +96,14 @@ export class ChromeMcpClient {
   async connect(signal?: AbortSignal): Promise<McpToolInfo[]> {
     if (this.client) throw new Error("client already connected");
     signal?.throwIfAborted();
+    const invalid = validateProfilePath(
+      this.record.userDataDir,
+      this.record.profileDirName,
+    );
+    if (invalid)
+      throw new Error(
+        `Chrome profile is unavailable: ${invalid}. No browser was opened.`,
+      );
     const spec = buildSpawnSpec(this.record);
     this.transport = this.makeTransport(spec) as StdioClientTransport;
     this.client = this.makeClient();

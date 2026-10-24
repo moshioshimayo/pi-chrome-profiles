@@ -1,10 +1,12 @@
 # pi-chrome-profiles
 
-A [pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) extension that lets the agent drive **one named real Chrome profile at a time** through the official [Playwright MCP Chrome extension](https://chromewebstore.google.com/detail/playwright-extension/mmlmfjhmonkocbjadbfplnigmagldckm) relay. No fresh anonymous browsers, no profile guessing, no CDP server, no browser discovery daemon.
+Run **`/chrome connect`**, pick a recognizable Chrome profile, and follow the first-time setup. No filesystem paths in the normal flow; saved profiles reconnect with one choice.
+
+A [pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) extension that drives **one named real Chrome profile at a time** through the official [Playwright Chrome extension](https://chromewebstore.google.com/detail/playwright-extension/mmlmfjhmonkocbjadbfplnigmagldckm). No fresh anonymous browsers, guessed ports, extra CDP server or discovery daemon.
 
 ## How it works
 
-- You pair a profile once: friendly name + full Profile Path + that profile's extension token (masked input, explicit consent). Stored at `~/.pi/agent/chrome-profiles/profiles.json` (dir `0700`, file `0600`, atomic writes, tokens masked in every listing).
+- Pick a detected profile once; Pi opens its setup page and guides you through one masked token paste and explicit consent. No path/name typing in the normal flow. Stored at `~/.pi/agent/chrome-profiles/profiles.json` (dir `0700`, file `0600`, atomic writes, tokens masked in every listing).
 - The agent pins exactly one profile per session with `chrome_use(name)`. The pin is taken **before** the connection attempt and **retained on failure**; a different profile is rejected until a human runs `/chrome release`.
 - Connection = `@playwright/mcp` `0.0.83` (pinned) spawned as `node cli.js --extension --browser chrome --user-data-dir <dir> --profile-dir-name <name>` (`shell:false`, token via env `PLAYWRIGHT_MCP_EXTENSION_TOKEN`, never in argv). The child env is an explicit allowlist (`PATH HOME TMPDIR LANG` + token) — no ambient `DEBUG`/`PLAYWRIGHT_*`.
 - "Connected" means the live browser answered a harmless `browser_tabs {action:"list"}` handshake — MCP initialize/listTools alone is not treated as a browser connection.
@@ -22,7 +24,15 @@ A [pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) extension 
 
 ## Commands
 
-`/chrome list` · `/chrome pair <name>` (TUI only: masked token + consent) · `/chrome forget <name>` (deletes token) · `/chrome release` (closes Pi's connection; Chrome stays open)
+| Command                        | Purpose                                                   |
+| ------------------------------ | --------------------------------------------------------- |
+| `/chrome` or `/chrome connect` | Profile picker; guided setup once or one-choice reconnect |
+| `/chrome connect Work`         | Connect a saved profile directly                          |
+| `/chrome pair`                 | Alias for guided connection                               |
+| `/chrome pair --manual [name]` | Advanced setup for custom Chrome locations                |
+| `/chrome list`                 | Saved profiles and connection state                       |
+| `/chrome forget <name>`        | Confirm removal of that pairing only                      |
+| `/chrome release`              | Close Pi's connection; Chrome stays open                  |
 
 ## Install (when John approves)
 
@@ -30,16 +40,28 @@ A [pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) extension 
 cd pi-chrome-profiles
 npm ci --legacy-peer-deps
 pi install "$(pwd)"   # registers the package; only do this when you want to install it
-# In Pi: /reload, then /chrome pair Chrome A
+# In Pi: /reload, then /chrome connect
 ```
 
-Pairing needs the official Playwright Extension installed in **that** Chrome profile (Chrome Web Store). Open `chrome://version` in that profile and copy its full **Profile Path**. Run `/chrome pair Chrome A` in Pi, enter the path, then paste that profile's extension token (extension menu → "Set this environment variable…") into the masked input. Review the persistent-access consent. Pair other profiles as Chrome B/C. Then tell the agent to use Chrome A; it selects `chrome_use("Chrome A")` and routes actions through `chrome_browser`. Names with spaces work. These are enrolled profiles, not automatic live-browser discovery. The selected profile may be opened if closed; a rejected token never falls back to another browser.
+## Connect in Pi
+
+1. Run `/chrome connect` and choose **Work**, **Personal**, or another detected Chrome display name.
+2. For first-time setup, approve persistent access. If needed, Pi opens the official extension installer in **that exact profile**; approve installation in Chrome yourself.
+3. Pi opens that profile's Playwright token page. Click the **Copy** button and paste its whole value into Pi's **masked prompt**, then Enter. Pi accepts the copied `PLAYWRIGHT_MCP_EXTENSION_TOKEN=…` line as-is—you do not need to edit it. Never paste it into chat. Pi saves the pairing and immediately attempts to connect.
+4. Later, choose the saved profile from `/chrome connect` or use `/chrome connect Work`. No repeated path, token or consent prompts.
+
+To choose your own name while first pairing, run `/chrome connect Chrome A` and select its Chrome profile. The human picker can switch profiles; the agent cannot change its pin by itself.
+
+Discovery projects only profile display names from Chrome's `Local State` metadata. It does not read Preferences contents, cookies or extension tokens. These are detected **on-disk profiles**, not a claim that all browsers are running. The selected profile may be opened if closed; a missing profile or rejected token never falls back to another browser.
+
+The official extension still requires one token copy; there is no silent credential import. Custom locations remain available through **Advanced: enter a profile path** in the picker or `/chrome pair --manual Chrome A`.
 
 ## Development
 
 ```sh
 npm test        # focused node --test checks (no network or real Chrome)
-npm run verify  # tests + actual Pi RPC package discovery; no model call or existing-profile access
+npm run verify  # tests + actual Pi RPC package discovery; no model or existing-profile access
+npm run verify:ui  # native Pi terminal wizard, disposable HOME and fake browser transport; no actual Chrome
 ```
 
 ## Verification status

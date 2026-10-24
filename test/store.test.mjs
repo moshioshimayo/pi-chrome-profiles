@@ -43,6 +43,29 @@ test("list masks tokens; get returns raw for connecting", () => {
 	assert.equal(store.get("WORK").token, "supersecret-token-42");
 });
 
+test("the official Copy button assignment works as-is, including previously saved copies", () => {
+	const { store, dir } = tmpStore();
+	try {
+		const token = "fixture-connection-value";
+		store.add({ name: "Work", userDataDir: "/a", profileDirName: "P", token: `PLAYWRIGHT_MCP_EXTENSION_TOKEN=${token}` });
+		const file = path.join(dir, "profiles.json");
+		const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+		assert.equal(saved.profiles[0].token, token, "new pairing persists only the connection value");
+		saved.profiles[0].token = `PLAYWRIGHT_MCP_EXTENSION_TOKEN=${token}`;
+		fs.writeFileSync(file, JSON.stringify(saved));
+		assert.equal(store.get("work").token, token, "legacy copied assignments reconnect without asking for a new token");
+		assert.ok(!JSON.stringify(store.list()).includes(token));
+	} finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("invalid multi-line token paste is rejected without saving or echoing it", () => {
+	const { store, dir } = tmpStore();
+	try {
+		assert.throws(() => store.add({ name: "Bad", userDataDir: "/a", profileDirName: "P", token: "value-with\na-second-line" }), /Paste the Playwright token/);
+		assert.deepEqual(store.list(), []);
+	} finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("remove deletes only the named record", () => {
 	const { store } = tmpStore();
 	store.add({ name: "A", userDataDir: "/a", profileDirName: "P", token: "t" });

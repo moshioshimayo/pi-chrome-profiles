@@ -9,6 +9,12 @@ import type {
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import path from "node:path";
+import {
+  discoverChromeProfiles,
+  openChromeSetup,
+  type DetectedProfile,
+} from "./profiles.ts";
 import { ChromeMcpClient, textOf, type McpToolInfo } from "./client.ts";
 import { maskedInput } from "./masked-input.ts";
 import {
@@ -19,30 +25,170 @@ import {
 } from "./store.ts";
 import { SessionPin, blocksBrowserRoute } from "./state.ts";
 
-export default function chromeProfiles(pi: ExtensionAPI) {
+export default function chromeProfiles(
+  pi: ExtensionAPI,
+  options: {
+    discover?: typeof discoverChromeProfiles;
+    openSetup?: typeof openChromeSetup;
+    createClient?: (record: ProfileRecord) => ChromeMcpClient;
+  } = {},
+) {
   const store = new ProfileStore();
   const pin = new SessionPin();
-  const clientFactory = (record: ProfileRecord) => new ChromeMcpClient(record);
+  const clientFactory =
+    options.createClient ??
+    ((record: ProfileRecord) => new ChromeMcpClient(record));
+  const discover = options.discover ?? discoverChromeProfiles;
+  const openSetup = options.openSetup ?? openChromeSetup;
 
-  const consentLines = (
-    name: string,
-    userDataDir: string,
-    profileDirName: string,
-  ): string[] => [
-    `Pair Chrome profile "${name}"?`,
+  const consentLines = (name: string): string[] => [
+    `Let Pi automate "${name}", including sites you're signed into?`,
     ``,
-    `• User data dir: ${userDataDir}`,
-    `• Profile directory: ${profileDirName}`,
-    ``,
-    `This grants Pi PERSISTENT control of that Chrome profile: every site`,
-    `login, cookie and saved session in it becomes reachable by automation`,
-    `until you run /chrome forget. No per-use confirmation will be asked.`,
-    `The official Playwright connector may open this exact profile`,
-    `(a connect page or a Chrome window) when it connects; it will never`,
-    `open a different profile or create a fresh anonymous one.`,
-    ``,
-    `Cancel now leaves everything unchanged.`,
+    `You'll copy a Playwright token once. Pi saves it privately and can`,
+    `reconnect without asking again until /chrome forget ${name}.`,
+    `Only this Chrome profile is used; it may be opened if closed.`,
+    `No tokens are imported automatically. Cancel saves nothing.`,
   ];
+
+  async function pairProfile(
+    profile: DetectedProfile,
+    name: string,
+    ctx: ExtensionCommandContext,
+    guided: boolean,
+  ): Promise<ProfileRecord | undefined> {
+    const invalid = validateProfilePath(
+      profile.userDataDir,
+      profile.profileDirName,
+    );
+    if (invalid) {
+      ctx.ui.notify(`That Chrome profile is unavailable: ${invalid}`, "error");
+      return;
+    }
+    if (
+      !(await ctx.ui.confirm(`Connect ${name}?`, consentLines(name).join("\n")))
+    )
+      return;
+    if (guided) {
+      if (!profile.extensionInstalled) {
+        ctx.ui.notify(
+          `Opening the official Playwright extension installer in ${name}. Approve installation in Chrome yourself.`,
+          "info",
+        );
+        await openSetup(profile, "install");
+        const next = await ctx.ui.select(
+          `Install Playwright in ${name}, then return here`,
+          ["Installed — continue", "Cancel"],
+        );
+        if (next !== "Installed — continue") return;
+      }
+      await openSetup(profile, "token");
+    }
+    const token = await ctx.ui.custom<string | null>(
+      (tui, _theme, _kb, done) =>
+        maskedInput(tui, done, {
+          title: `Connect ${name} — one-time setup`,
+          hint: guided
+            ? "In Chrome: click Copy token. Paste here once; press Enter."
+            : "Copy this profile's Playwright token. Paste here; press Enter.",
+        }),
+      { overlay: true },
+    );
+    if (!token) {
+      ctx.ui.notify("Setup cancelled; nothing saved.", "info");
+      return;
+    }
+    const paired = store.add({
+      name,
+      userDataDir: profile.userDataDir,
+      profileDirName: profile.profileDirName,
+      token,
+    });
+    ctx.ui.notify(
+      `Paired "${paired.name}". You won't need to repeat setup.`,
+      "info",
+    );
+    return store.get(paired.name);
+  }
+
+  async function connectProfile(
+    record: ProfileRecord,
+    ctx: ExtensionCommandContext,
+  ): Promise<void> {
+    ctx.ui.notify(`Connecting to ${record.name}…`, "info");
+    try {
+      // A human picker choice may switch profiles; agent-side chrome_use cannot.
+      if (pin.pinnedKey && pin.pinnedKey !== record.nameKey)
+        await pin.release();
+      await pin.use(record, clientFactory);
+      ctx.ui.setStatus?.("chrome-profile", `Chrome: ${record.name}`);
+      ctx.ui.notify(
+        `Connected to ${record.name}. Tell your agent what to do; browsing stays in this profile.`,
+        "info",
+      );
+    } catch (error) {
+      ctx.ui.setStatus?.(
+        "chrome-profile",
+        `Chrome: ${record.name} (not connected)`,
+      );
+      ctx.ui.notify(
+        `Could not connect to ${record.name}: ${error instanceof Error ? error.message : String(error)}\nYour pairing is saved. Check Playwright in that Chrome profile, then /chrome connect ${record.name}.`,
+        "error",
+      );
+    }
+  }
+
+  async function cmdConnect(
+    name: string | undefined,
+    ctx: ExtensionCommandContext,
+  ): Promise<void> {
+    const saved = name ? store.get(name) : undefined;
+    if (saved) {
+      await connectProfile(saved, ctx);
+      return;
+    }
+    const paired = store.list();
+    const identity = (
+      profile: Pick<ProfileRecord, "userDataDir" | "profileDirName">,
+    ) => path.resolve(profile.userDataDir, profile.profileDirName);
+    const known = new Set(paired.map(identity));
+    const detected = discover().filter(
+      (profile) => !known.has(identity(profile)),
+    );
+    const choices = [
+      ...paired.map((profile) => ({
+        label: `${profile.name} · saved`,
+        savedName: profile.name,
+      })),
+      ...detected.map((profile) => ({
+        label: `${profile.name}${detected.filter((other) => other.name === profile.name).length > 1 ? ` (${profile.profileDirName})` : ""} · first-time setup`,
+        profile,
+      })),
+    ];
+    const manual = "Advanced: enter a profile path";
+    const selected = await ctx.ui.select(
+      name
+        ? `Choose the Chrome profile for ${name}`
+        : "Connect Chrome — choose a profile",
+      [...choices.map((choice) => choice.label), manual],
+    );
+    if (!selected) return;
+    if (selected === manual) {
+      await cmdPair(name, ctx);
+      return;
+    }
+    const choice = choices.find((item) => item.label === selected);
+    if (!choice) return;
+    if ("savedName" in choice) {
+      const record = store.get(choice.savedName);
+      if (record) await connectProfile(record, ctx);
+      return;
+    }
+    let friendlyName = name || choice.profile.name;
+    for (let suffix = 2; store.get(friendlyName); suffix++)
+      friendlyName = `${name || choice.profile.name} (${suffix})`;
+    const record = await pairProfile(choice.profile, friendlyName, ctx, true);
+    if (record) await connectProfile(record, ctx);
+  }
 
   async function cmdPair(
     nameArg: string | undefined,
@@ -72,35 +218,17 @@ export default function chromeProfiles(pi: ExtensionAPI) {
         `Not a Chrome profile: ${markerErr}. Cancelled; nothing changed.`,
         "error",
       );
-    const token = await ctx.ui.custom<string | null>(
-      (tui, _theme, _kb, done) =>
-        maskedInput(tui, done, {
-          title: "Playwright extension token",
-          hint: "From the extension menu in THAT Chrome profile. Paste, then Enter.",
-        }),
-      { overlay: true },
+    const record = await pairProfile(
+      { name, ...split, extensionInstalled: false },
+      name,
+      ctx,
+      false,
     );
-    if (!token) return void ctx.ui.notify("Pairing cancelled.", "info");
-    const ok = await ctx.ui.confirm(
-      "Grant persistent access?",
-      consentLines(name, split.userDataDir, split.profileDirName).join("\n"),
-    );
-    if (!ok)
-      return void ctx.ui.notify("Pairing cancelled; nothing changed.", "info");
-    try {
-      const rec = store.add({
-        name,
-        userDataDir: split.userDataDir,
-        profileDirName: split.profileDirName,
-        token,
-      });
+    if (record)
       ctx.ui.notify(
-        `Paired "${rec.name}" (${rec.profileDirName}). Token stored mode 0600. Use chrome_use("${rec.name}") to connect.`,
+        `Saved ${record.name}. Use /chrome connect ${record.name} to connect.`,
         "info",
       );
-    } catch (err) {
-      ctx.ui.notify(err instanceof Error ? err.message : String(err), "error");
-    }
   }
 
   function listText(): string {
@@ -109,7 +237,7 @@ export default function chromeProfiles(pi: ExtensionAPI) {
       ? `Pinned: ${pin.pinnedName} (${pin.client?.connected ? "connected" : pin.connecting ? "connecting…" : pin.lastError ? "connect failed — retry with chrome_use" : "not connected"})`
       : "Pinned: none";
     if (!rows.length)
-      return `No paired profiles. Run /chrome pair <name> in the TUI.\n${pinned}`;
+      return `No paired profiles. Run /chrome connect to choose Chrome and get set up.\n${pinned}`;
     return [
       pinned,
       "",
@@ -122,19 +250,21 @@ export default function chromeProfiles(pi: ExtensionAPI) {
 
   pi.registerCommand("chrome", {
     description:
-      "Named Chrome profiles: list | pair <name> | forget <name> | release",
+      "Connect Chrome: pick a profile, guided setup once, then one-choice reconnect. Advanced: list | pair --manual <name> | forget <name> | release",
     handler: async (args, ctx) => {
       const [sub, ...rest] = args.trim().split(/\s+/).filter(Boolean);
       try {
-        if (!sub || sub === "list") {
+        if (sub === "list" || (!sub && ctx.mode !== "tui")) {
           ctx.ui.notify(listText(), "info");
-        } else if (sub === "pair") {
+        } else if (!sub || sub === "connect" || sub === "pair") {
           if (ctx.mode !== "tui")
             return void ctx.ui.notify(
               "Pairing needs the interactive TUI (masked token input + consent).",
               "error",
             );
-          await cmdPair(rest.join(" ") || undefined, ctx);
+          if (sub === "pair" && rest[0] === "--manual")
+            await cmdPair(rest.slice(1).join(" ") || undefined, ctx);
+          else await cmdConnect(rest.join(" ") || undefined, ctx);
         } else if (sub === "forget") {
           const name = rest.join(" ");
           if (!name)
@@ -157,6 +287,7 @@ export default function chromeProfiles(pi: ExtensionAPI) {
           ctx.ui.notify(`Forgot "${rec.name}" (token deleted).`, "info");
         } else if (sub === "release") {
           const name = await pin.release();
+          ctx.ui.setStatus?.("chrome-profile", undefined);
           ctx.ui.notify(
             name
               ? `Released ${name} (Chrome stays open; only Pi's connection closed).`
@@ -165,7 +296,7 @@ export default function chromeProfiles(pi: ExtensionAPI) {
           );
         } else {
           ctx.ui.notify(
-            "Usage: /chrome [list|pair <name>|forget <name>|release]",
+            "Usage: /chrome connect [name] | list | pair --manual [name] | forget <name> | release",
             "error",
           );
         }
@@ -177,9 +308,14 @@ export default function chromeProfiles(pi: ExtensionAPI) {
       }
     },
     getArgumentCompletions: async (query) => {
-      const subs = ["list", "pair", "forget", "release"];
-      const values = query.startsWith("forget ")
-        ? store.list().map((p) => `forget ${p.name}`)
+      const subs = ["connect", "list", "pair", "forget", "release"];
+      const target = query.startsWith("forget ")
+        ? "forget"
+        : query.startsWith("connect ")
+          ? "connect"
+          : undefined;
+      const values = target
+        ? store.list().map((profile) => `${target} ${profile.name}`)
         : subs;
       return values
         .filter((value) => value.startsWith(query))
@@ -219,7 +355,8 @@ export default function chromeProfiles(pi: ExtensionAPI) {
                 store
                   .list()
                   .map((r) => `- ${r.name}`)
-                  .join("\n") || "  (none — pair via /chrome pair <name>)"
+                  .join("\n") ||
+                "  (none — use /chrome connect for guided setup)"
               }`,
             },
           ],

@@ -1,6 +1,6 @@
 {
   "name": "pi-chrome-profiles",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Pi extension: drive one named real Chrome profile at a time through the official Playwright MCP Chrome extension relay",
   "type": "module",
@@ -16,7 +16,8 @@
   ],
   "scripts": {
     "test": "node --test",
-    "verify": "node --test && ./scripts/loader-smoke.sh"
+    "verify": "node --test && ./scripts/loader-smoke.sh",
+    "verify:ui": "python3 scripts/wizard-smoke.py"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",
