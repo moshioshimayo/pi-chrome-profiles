@@ -1,3 +1,9 @@
 node_modules/
 *.log
 .DS_Store
+.env
+.env.*
+.playwright-mcp/
+.pi/ship-readiness/
+.uat/
+*.tgz

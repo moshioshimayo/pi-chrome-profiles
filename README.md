@@ -34,14 +34,25 @@ A [pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) extension 
 | `/chrome forget <name>`        | Confirm removal of that pairing only                      |
 | `/chrome release`              | Close Pi's connection; Chrome stays open                  |
 
-## Install (when John approves)
+## Install
+
+Requirements: **Node.js 22.18+**, **Pi** (tested with 1.2.0), and **Google Chrome**. Pairing uses Microsoft's official Playwright Chrome extension; the wizard opens its installer if needed. No remote-debugging flags are required.
 
 ```sh
+git clone https://github.com/moshioshimayo/pi-chrome-profiles.git
 cd pi-chrome-profiles
 npm ci --legacy-peer-deps
-pi install "$(pwd)"   # registers the package; only do this when you want to install it
-# In Pi: /reload, then /chrome connect
+pi install "$(pwd)"
 ```
+
+Then, inside Pi:
+
+```text
+/reload
+/chrome connect
+```
+
+This is an open-source GitHub package, not an npm registry release. Keep the installed checkout in place; Pi references that directory.
 
 ## Connect in Pi
 
@@ -67,5 +78,18 @@ npm run verify:ui  # native Pi terminal wizard, disposable HOME and fake browser
 ## Verification status
 
 - Focused checks cover — spawn identity/argv/env allowlist, pin-before-connect/retain-on-failure/deny-other-until-release, serialization and stale-client invalidation, abort, handshake-before-connected, denied ops, redaction (raw/URL-encoded/JSON), store modes/atomicity/uniqueness, browser-route gate incl. generic MCP dispatch, masked input.
-- Maintained Pi loader check uses the real RPC interface to discover `/chrome` through the package manifest in an isolated HOME, without invoking a model or connecting a browser. The earlier direct-file smoke also executed `chrome_profiles` through real Pi.
-- **Real pairing through the official extension: UNVERIFIED.** Bounded disposable attempt (unpacked official CRX — manifest key preserves the official id — loaded into headless Chrome-for-Testing with a seeded token, driven via the real `ChromeMcpClient`): MCP initialize + `listTools` (25 tools) succeeded, but the extension never received the relay's connect page. Exact unmet prerequisite: **the relay delivers its `connect.html?...&token=…` URL by launching Chrome against the profile's process singleton; in disposable headless Chrome-for-Testing that handoff did not open a tab in the running instance, and the server logs no ws endpoint to open it manually.** In real headed use (vendor-supported flow) the relay's own Chrome launch opens the connect page in the user's running profile. Verifying end-to-end requires either a headed disposable Chrome (a visible window on John's screen) or John pairing one real profile interactively.
+- **55 automated checks** pass, including the guided picker, exact-profile setup-page arguments, one-time copied-token handling, saved reconnect, consent cancellation, stale-profile rejection, credential redaction and pinning.
+- The real Pi RPC loader discovers `/chrome` through the package manifest in an isolated HOME, with no model call or browser connection.
+- The real Pi terminal walkthrough exercises the picker → consent → masked paste → connected result using disposable profile metadata and a fixture browser transport. This verifies the UI, not browser authentication.
+- **Real Chrome pairing and browser control verified on macOS on 2026-10-25:** after interactive pairing through the official extension, the named connection opened a test tab, navigated to `https://example.com/`, read the page title/body through Playwright, and closed only that test tab. No private site content was used for verification.
+- Chrome-for-Testing headless profile handoff did not complete in an earlier disposable attempt. Use the supported normal-Chrome flow; this is not a headless Chrome launcher. Windows/Linux discovery and launcher paths are provided, but real authenticated Chrome control was verified on macOS only.
+
+## Security and scope
+
+Pair only profiles you intend to expose to the agent. A paired profile may already be signed into sensitive sites. Tokens are stored in a local `0600` file, **not an encrypted keychain**; do not share that file, paste tokens into chat, or commit browser state.
+
+The browser-tool gate steers known Pi browser routes to the selected connection. It is **not an OS sandbox** against arbitrary shell code, hostile local processes, compromised extensions, or unrecognized third-party tools. Use a separate Chrome profile when stronger separation is appropriate. Native desktop/window automation and live-profile discovery are outside this package's scope.
+
+## License
+
+[MIT](LICENSE). This project is independent of Microsoft and Playwright. The official Chrome extension, Playwright MCP and MCP SDK retain their own licenses; this repository does not vendor their code.
