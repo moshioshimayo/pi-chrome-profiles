@@ -1,7 +1,7 @@
 // Exercise package discovery through the real Pi RPC interface, without a model call.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, cpSync, symlinkSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,12 +9,27 @@ import { createInterface } from "node:readline";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const home = mkdtempSync(join(tmpdir(), "chrome-package-loader-"));
+// Reproduce global install + a second checkout/worktree, without discovering this machine's real config.
+const installed = join(home, "installed");
+const checkout = join(home, "checkout");
+for (const target of [installed, checkout]) {
+  mkdirSync(target, { recursive: true });
+  for (const relative of ["package.json", "index.ts", "src", ".pi/extensions"]) {
+    const source = join(root, relative);
+    if (existsSync(source)) cpSync(source, join(target, relative), { recursive: true });
+  }
+  symlinkSync(join(root, "node_modules"), join(target, "node_modules"), process.platform === "win32" ? "junction" : "dir");
+}
+const agentDir = join(home, ".pi", "agent");
+mkdirSync(agentDir, { recursive: true });
+writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [installed] }));
 const env = { ...process.env, HOME: home };
 for (const key of Object.keys(env)) {
   if (/^HERDR_|^PI_(?:CODING_AGENT_DIR|SENTINEL|SESSION|WORK)/.test(key)) delete env[key];
 }
-const child = spawn("pi", ["--mode", "rpc", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--extension", root], {
-  cwd: home, env, stdio: ["pipe", "pipe", "pipe"],
+// Normal discovery stays enabled: opening another checkout must not auto-load a second copy.
+const child = spawn("pi", ["--mode", "rpc", "--no-skills", "--no-prompt-templates", "--no-themes"], {
+  cwd: checkout, env, stdio: ["pipe", "pipe", "pipe"],
 });
 const lines = createInterface({ input: child.stdout });
 let stderr = "";
@@ -31,14 +46,14 @@ try {
       if (response.id !== "chrome-package-smoke") return;
       try {
         assert.equal(response.success, true, JSON.stringify(response));
-        const command = response.data.commands.find((entry) => entry.name === "chrome");
-        assert.ok(command, "real package-root discovery must register /chrome");
+        const commands = response.data.commands.filter((entry) => entry.name === "chrome");
+        assert.equal(commands.length, 1, "installed package must register exactly one /chrome inside a second checkout");
         resolveResult();
       } catch (error) { reject(error); }
     });
     child.stdin.write(`${JSON.stringify({ type: "get_commands", id: "chrome-package-smoke" })}\n`);
   });
-  console.log("loader-smoke: OK — real Pi discovered /chrome through the package manifest; isolated HOME, no model or browser connection");
+  console.log("loader-smoke: OK — global package plus second checkout loads exactly once; isolated HOME, normal discovery, no model or browser connection");
 } finally {
   clearTimeout(timer);
   lines.close();

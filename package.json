@@ -21,12 +21,12 @@
   "type": "module",
   "pi": {
     "extensions": [
-      "./.pi/extensions/index.ts"
+      "./index.ts"
     ]
   },
   "files": [
     "src/",
-    ".pi/extensions/",
+    "index.ts",
     "README.md",
     "LICENSE"
   ],
